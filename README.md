@@ -1,8 +1,14 @@
 # Servers Crash Downdetector
 A means of verifying a connection to a server via a TCP connection over a domain/ip.
-# Servers Crash Downdetector
 
 ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)![Flask](https://img.shields.io/badge/Flask-000000?style=for-the-badge&logo=flask&logoColor=white)![Telegram](https://img.shields.io/badge/Telegram-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)![SQLite](https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
+
+#### Обозначения версий:
+* T — Протестировано.
+* S — Стабильно.
+* NT — Не тестировалось.
+* NS — Не стабильно.
+* HE — Имеются ошибки.
 
 Комплексная система для мониторинга доступности серверов. Включает в себя Telegram-бота для отправки уведомлений и администрирования, а также публичный веб-интерфейс для отображения статусов серверов в реальном времени.
 
