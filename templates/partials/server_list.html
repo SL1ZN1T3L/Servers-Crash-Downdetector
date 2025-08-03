@@ -1,0 +1,11 @@
+{% for server in servers %}
+<div class="server-card">
+    <div class="status-icon {% if server.is_alive %}online{% else %}offline{% endif %}"></div>
+    <div class="server-info">
+        <span class="server-name">{{ server.name }}</span>
+    </div>
+    <div class="server-stats">
+        <span class="ping">{{ server.latency_ms if server.latency_ms != -1 else 'N/A' }} ms</span>
+    </div>
+</div>
+{% endfor %}

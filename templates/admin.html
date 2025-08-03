@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <link rel="icon" href="{{ url_for('static', filename='images/favicon.ico') }}" sizes="any">
+    <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='images/favicon-32x32.png') }}">
+    <link rel="icon" type="image/png" sizes="16x16" href="{{ url_for('static', filename='images/favicon-16x16.png') }}">
+    <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='images/apple-touch-icon.png') }}">
+    <link rel="manifest" href="{{ url_for('static', filename='images/site.webmanifest') }}">
+    <meta name="theme-color" content="#1a1a2e">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Админ панель статуса серверов</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <meta http-equiv="refresh" content="60">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Админская часть</h1>
+            <a href="/" class="back-link">← Вернуться в Публичную версию</a>
+        </header>
+
+        <div class="card-deck">
+            <div class="info-card">
+                <h2>Проверить конфигурацию</h2>
+                <p><strong>Время проверки:</strong> {{ config.CHECK_INTERVAL or 'N/A' }}s</p>
+                <p><strong>Повторы:</strong> {{ config.CHECK_RETRIES or 'N/A' }}</p>
+                <p><strong>Разз в сколько повтор:</strong> {{ config.CHECK_RETRY_DELAY or 'N/A' }}s</p>
+                <p><strong>Таймаут:</strong> {{ config.CHECK_SINGLE_TIMEOUT or 'N/A' }}s</p>
+                <p><strong>Failure Threshold:</strong> {{ config.FAILURE_THRESHOLD or 'N/A' }}</p>
+            </div>
+             <div class="info-card">
+                <h2>Иформация о боте</h2>
+                <p><strong>Контакты админа:</strong> @{{ config.TELEGRAM_TAG or 'N/A' }}</p>
+            </div>
+        </div>
+
+        <h2>Проверяемые сервера</h2>
+        <div class="server-list">
+             {% for server in servers %}
+                <div class="server-card">
+                    <div class="status-icon {% if server.is_alive %}online{% else %}offline{% endif %}"></div>
+                    <div class="server-info">
+                        <span class="server-name">
+                           {{ '🌍' if server.is_public else '🔒' }}
+                           {{ server.name }}
+                        </span>
+                        <span class="server-host">{{ server.host }}:{{ server.port }}</span>
+                    </div>
+                    <div class="server-stats">
+                        <span class="ping">{{ server.latency_ms if server.latency_ms != -1 else 'N/A' }} ms</span>
+                        <span class="last-checked">
+                            Проверено: 
+                            {% if server.last_checked %}
+                                {{ datetime.fromisoformat(server.last_checked).astimezone(moscow_tz).strftime('%Y-%m-%d %H:%M:%S') }} From Rezerv
+                            {% else %}
+                                Никогда
+                            {% endif %}
+                        </span>
+                    </div>
+                </div>
+            {% endfor %}
+        </div>
+        <footer>
+           Система мониторнга, Админская часть
+        </footer>
+    </div>
+</body>
+</html

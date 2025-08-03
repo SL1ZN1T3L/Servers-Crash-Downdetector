@@ -1,0 +1,31 @@
+<table>
+    <thead>
+        <tr>
+            <th>Сервер</th>
+            <th>Время работы (24h)</th>
+            <th>Время падения сервера</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for server in servers %}
+            {% set server_id = server.id %}
+            {% if stats[server_id] %}
+                <tr>
+                    <td>{{ stats[server_id].name }}</td>
+                    <td><span class="uptime">{{ stats[server_id].uptime_percent }}%</span></td>
+                    <td>
+                        {% if stats[server_id].downtime_periods %}
+                            {% for period in stats[server_id].downtime_periods %}
+                            <span class="period">
+                                {{ period.start }} - {{ period.end }} ({{ period.duration }} min)
+                            </span>
+                            {% endfor %}
+                        {% else %}
+                            Нет записей или серввер не падал за последние 24 часа.
+                        {% endif %}
+                    </td>
+                </tr>
+            {% endif %}
+        {% endfor %}
+    </tbody>
+</table>
