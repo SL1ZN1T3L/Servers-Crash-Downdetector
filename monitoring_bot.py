@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 CONFIG_FILE = 'config.json'
 config_lock = asyncio.Lock()
 telegram_tag = ''
+website_url = ''
 
 (
     AS_NAME, AS_HOST, AS_PORT,
@@ -245,6 +246,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     config = await load_json_async(config_lock, CONFIG_FILE)
     is_admin = user_id in config.get('admin_chat_ids', [])
     text = "👋 Привет\\! Я бот для мониторинга твоих серверов\\.\n\n"
+    if website_url:
+        text += f"Так\\-же моя веб часть находится на данном [сайте]({website_url})\\.\n\n"
+    else:
+        text += "\n"
+
 
     query = update.callback_query
     if is_admin:
@@ -636,7 +642,9 @@ def main():
     database.migrate_db(); database.init_db()
     load_dotenv()
     token = os.getenv("TELEGRAM_BOT_TOKEN")
+
     global telegram_tag; telegram_tag = os.getenv("TELEGRAM_TAG", "your_telegram_tag")
+    global website_url; website_url = os.getenv("WEBSITE_URL", "example.com")
     if not token: logger.critical("Не найден TELEGRAM_BOT_TOKEN в .env! Выход."); return
 
     if not database.get_servers() and os.path.exists('servers.json'):
