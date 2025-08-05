@@ -34,10 +34,10 @@ telegram_tag = ''
 website_url = ''
 
 (
-    AS_NAME, AS_HOST, AS_PORT,
-    AC_ID,
+    AS_NAME, AS_HOST, AS_PORT, 
+    AN_DESCRIPTION, AN_ID, AN_THREAD_ID,
     SI_VALUE
-) = range(5)
+) = range(7)
 
 
 async def load_json_async(lock, filename):
@@ -72,8 +72,11 @@ def admin_only(func):
                 await update.message.reply_text("⛔ У вас нет прав для выполнения этой команды.")
 
             user_tag = update.effective_user.username or 'N/A'
-            logger.warning(f"Несанкционированный доступ к {func.__name__} от {user_id} (@{user_tag})")
-            text = f"Несанкционированный доступ к `{func.__name__}` от @{user_tag} \\| `{user_id}`"
+            logger.warning(f"Несанкционированный доступ к {func.__name__} от {user_id} \\(@{user_tag}\\)")
+            safe_func_name = escape_markdown(func.__name__)
+            safe_user_tag = escape_markdown(user_tag)
+            text = f"Несанкционированный доступ к `{safe_func_name}` от @{safe_user_tag} \\| `{user_id}`"
+
             for chat_id in admin_chat_ids:
                 try:
                     await context.bot.send_message(chat_id, text, parse_mode=ParseMode.MARKDOWN_V2)
@@ -119,7 +122,7 @@ async def monitoring_job(context: ContextTypes.DEFAULT_TYPE):
     failure_threshold = context.bot_data.get('failure_threshold', 3)
     
     config = await load_json_async(config_lock, CONFIG_FILE)
-    admin_chat_ids = config.get('admin_chat_ids', [])
+    notification_chats = config.get('notification_chats', [])
 
     for server in servers:
         server_id = server['id']
@@ -142,9 +145,15 @@ async def monitoring_job(context: ContextTypes.DEFAULT_TYPE):
                 context.bot_data[alert_sent_id] = False 
                 name = escape_markdown(server['name'])
                 message = f"✅ *ВОССТАНОВЛЕНИЕ* ✅\n\nСервер *{name}* снова в строю\\!"
-                for chat_id in admin_chat_ids:
-                    try: await bot.send_message(chat_id, message, parse_mode=ParseMode.MARKDOWN_V2)
-                    except TelegramError as e: logger.error(f"Не удалось отправить сообщение о восстановлении в чат {chat_id}: {e}")
+                for chat_info in notification_chats:
+                    try: 
+                        await bot.send_message(
+                            chat_id=chat_info['id'], 
+                            text=message, 
+                            parse_mode=ParseMode.MARKDOWN_V2,
+                            message_thread_id=chat_info.get('thread_id')
+                        )
+                    except TelegramError as e: logger.error(f"Не удалось отправить сообщение о восстановлении в чат {chat_info['id']}: {e}")
             if current_failures > 0:
                 context.bot_data[failure_counter_id] = 0
         else:
@@ -158,9 +167,17 @@ async def monitoring_job(context: ContextTypes.DEFAULT_TYPE):
                 message = (f"🚨 *ТРЕВОГА: СЕРВЕР НЕДОСТУПЕН* 🚨\n\n"
                            f"*Имя:* {name}\n*Адрес:* `{host_adress}`\n\n"
                            f"Сервер не отвечает после *{failure_threshold}* проверок подряд\\. Возможна блокировка или сбой\\.")
-                for chat_id in admin_chat_ids:
-                    try: await bot.send_message(chat_id, message, parse_mode=ParseMode.MARKDOWN_V2)
-                    except TelegramError as e: logger.error(f"Не удалось отправить тревожное сообщение в чат {chat_id}: {e}")
+
+                for chat_info in notification_chats:
+                    try:
+                        await bot.send_message(
+                            chat_id=chat_info['id'], 
+                            text=message, 
+                            parse_mode=ParseMode.MARKDOWN_V2,
+                            message_thread_id=chat_info.get('thread_id')
+                        )
+                    except TelegramError as e: logger.error(f"Не удалось отправить тревожное сообщение в чат {chat_info['id']}: {e}")
+
 
 async def build_main_menu_keyboard():
     keyboard = [
@@ -174,10 +191,7 @@ async def build_main_menu_keyboard():
             InlineKeyboardButton("🌍 Опубликовать", callback_data="menu:publish_list"),
             InlineKeyboardButton("🔒 Скрыть", callback_data="menu:hide_list"),
         ],
-        [
-            InlineKeyboardButton("🔔 Добавить чат", callback_data="conv_add_chat:start"),
-            InlineKeyboardButton("🔕 Удалить чат", callback_data="menu:remove_chat_list"),
-        ],
+        [InlineKeyboardButton("⚙️ Управление уведомлениями", callback_data="menu:notifications")],
         [InlineKeyboardButton("⏰ Изменить интервал", callback_data="conv_set_interval:start")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -185,21 +199,36 @@ async def build_main_menu_keyboard():
 async def get_status_text():
     config = await load_json_async(config_lock, CONFIG_FILE)
     all_servers = database.get_all_servers_with_status()
-    chats_str = ", ".join(map(str, config.get('admin_chat_ids', [])))
-    chats = escape_markdown(chats_str) if chats_str else "пусто"
+    
+    admins_str = ", ".join(map(str, config.get('admin_chat_ids', [])))
+    admins = escape_markdown(admins_str) if admins_str else "пусто"
 
     text_parts = [
         f"*Интервал проверки:* {escape_markdown(config.get('check_interval_seconds', 'N/A'))} секунд",
-        f"*Чаты для оповещений:* `{chats}`",
-        "\n*Отслеживаемые серверы:*"
+        f"*Администраторы бота:* `{admins}`",
     ]
+    
+    text_parts.append("\n*Получатели уведомлений:*")
+    notification_chats = config.get('notification_chats', [])
+    if not notification_chats:
+        text_parts.append("_Список пуст_")
+    else:
+        for chat_info in notification_chats:
+            default_desc = f"Получатель {chat_info['id']}"
+            description_text = chat_info.get('description') or default_desc
+            desc = escape_markdown(description_text)            
+            chat_id = chat_info['id']
+            thread_info = ""
+            if chat_info.get('thread_id'):
+                thread_info = f" \\(тема: {chat_info['thread_id']}\\)"
+            text_parts.append(f"\\- *{desc}* `{chat_id}`{thread_info}")
+            
+    text_parts.append("\n*Отслеживаемые серверы:*")
     if not all_servers:
         text_parts.append("_Список пуст_")
     else:
         for s in all_servers:
-            name = escape_markdown(s['name'])
-            host = escape_markdown(s['host'])
-            text_parts.append(f"\\- *{name}* \\- `{host}:{s['port']}`")
+            text_parts.append(f"\\- *{escape_markdown(s['name'])}* \\- `{escape_markdown(s['host'])}:{s['port']}`")
     
     text_parts.append("\n*Сервера в продакшене:*")
     public_servers = [s for s in all_servers if s['is_public']]
@@ -207,11 +236,10 @@ async def get_status_text():
         text_parts.append("_Нет серверов в продакшене_")
     else:
         for s in public_servers:
-            name = escape_markdown(s['name'])
-            host = escape_markdown(s['host'])
-            text_parts.append(f"\\- *{name}* \\- `{host}:{s['port']}`")
+            text_parts.append(f"\\- *{escape_markdown(s['name'])}* \\- `{escape_markdown(s['host'])}:{s['port']}`")
             
     return "\n".join(text_parts)
+
 
 async def perform_check_and_format(context: ContextTypes.DEFAULT_TYPE):
     servers = database.get_servers()
@@ -379,19 +407,28 @@ async def generic_list_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         action_prefix = "action_hide"
         title = "Выберите сервер, чтобы *скрыть* с сайта:"
     elif item_type == 'remove_chat':
+        title = "Эта функция устарела." 
+        items = []        
+    elif item_type == 'remove_notification':
         config = await load_json_async(config_lock, CONFIG_FILE)
-        items = [{'id': chat_id, 'name': str(chat_id)} for chat_id in config.get('admin_chat_ids', [])]
-        action_prefix = "action_remove_chat"
-        title = "Выберите чат для *удаления* из оповещений:"
-        id_key = name_key = 'id'
+        items = config.get('notification_chats', [])
+        action_prefix = "action_remove_notification"
+        title = "Выберите получателя для *удаления*:"
+        name_key, id_key = 'description', 'index'
 
     if not items:
         title = "Список пуст, действие не требуется."
         keyboard = [[InlineKeyboardButton("⬅️ Назад в меню", callback_data="menu:back_to_main")]]
     else:
-        keyboard_buttons = [[InlineKeyboardButton(str(item[name_key]), callback_data=f"{action_prefix}:{item[id_key]}")] for item in items]
+        keyboard_buttons = [
+            [InlineKeyboardButton(
+                str(item[name_key]), 
+                callback_data=f"{action_prefix}:{index if id_key == 'index' else item[id_key]}"
+            )] for index, item in enumerate(items)
+        ]
         keyboard_buttons.append([InlineKeyboardButton("⬅️ Назад в меню", callback_data="menu:back_to_main")])
         keyboard = keyboard_buttons
+
 
     await query.edit_message_text(title, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
 
@@ -414,12 +451,19 @@ async def generic_action_handler(update: Update, context: ContextTypes.DEFAULT_T
             status = "теперь *отображается* на сайте" if is_public else "больше *не отображается* на сайте"
             message = f"✅ Сервер *{escape_markdown(server_to_update['name'])}* {status}\\."
     elif action == "action_remove_chat":
-        chat_id_to_remove = int(item_id)
+        pass
+    elif action == "action_remove_notification":
+        item_index = int(item_id)
         config = await load_json_async(config_lock, CONFIG_FILE)
-        if chat_id_to_remove in config.get('admin_chat_ids', []):
-            config['admin_chat_ids'].remove(chat_id_to_remove)
+        
+        if 0 <= item_index < len(config.get('notification_chats', [])):
+            removed_item = config['notification_chats'].pop(item_index)
             await save_json_async(config_lock, CONFIG_FILE, config)
-            message = f"🔕 Чат `{chat_id_to_remove}` удален из списка оповещений\\."
+            desc = escape_markdown(removed_item['description'])
+            message = f"🗑️ Получатель *{desc}* был успешно удален\\."
+        else:
+            message = "❌ Ошибка: получатель не найден."
+
 
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад в меню", callback_data="menu:back_to_main")]])
     await query.edit_message_text(message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2)
@@ -441,33 +485,121 @@ async def hide_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: await update.message.reply_text("❌ Сервер не найден.")
 
 
-async def add_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    config = await load_json_async(config_lock, CONFIG_FILE)
-    if config.get('admin_chat_ids') and update.effective_user.id not in config.get('admin_chat_ids', []):
-        await update.message.reply_text("⛔ Эту команду могут выполнять только уже добавленные администраторы.")
-        return
-    if not context.args or not context.args[0].lstrip('-').isdigit():
-        await update.message.reply_text(f"Укажите ID чата\\. Ваш личный ID: `{update.effective_user.id}`", parse_mode=ParseMode.MARKDOWN_V2)
-        return
-    chat_id = int(context.args[0])
-    if 'admin_chat_ids' not in config: config['admin_chat_ids'] = []
-    if chat_id in config['admin_chat_ids']:
-        await update.message.reply_text("Этот чат уже есть в списке."); return
-    
-    config['admin_chat_ids'].append(chat_id)
-    await save_json_async(config_lock, CONFIG_FILE, config)
-    await update.message.reply_text(f"✅ Чат `{chat_id}` успешно добавлен\\.", parse_mode=ParseMode.MARKDOWN_V2)
 
 @admin_only
-async def remove_chat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args or not context.args[0].lstrip('-').isdigit(): await update.message.reply_text("Укажите ID чата."); return
-    chat_id = int(context.args[0])
+async def add_notification_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; await query.answer()
+    text = "Шаг 1/3: Введите *описание* для нового получателя \\(например, `Канал новостей`\\)\\. Или пропустите этот шаг\\."    
+    keyboard = [
+        [InlineKeyboardButton("⏩ Пропустить", callback_data="conv_add_notification:skip_description")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="conv:cancel")]
+    ]
+    context.user_data['conv_message'] = await query.edit_message_text(
+        text, 
+        reply_markup=InlineKeyboardMarkup(keyboard), 
+        parse_mode=ParseMode.MARKDOWN_V2
+    )
+    return AN_DESCRIPTION
+
+@admin_only
+async def add_notification_skip_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Срабатывает, когда пользователь нажимает кнопку 'Пропустить'."""
+    query = update.callback_query; await query.answer()
+    
+    context.user_data['chat_description'] = None
+    
+    conv_message = context.user_data['conv_message']
+    text = "Шаг 2/3: Отлично\\! Теперь отправьте *ID* чата, канала или пользователя\\.\n\n_Подсказка: ID канала можно узнать, переслав его пост боту @userinfobot\\. ID группы можно получить так же\\._"
+    
+    await conv_message.edit_text(
+        text, 
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="conv:cancel")]]), 
+        parse_mode=ParseMode.MARKDOWN_V2
+    )
+    return AN_ID
+
+@admin_only
+async def add_notification_get_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['chat_description'] = update.message.text
+    await update.message.delete()
+    conv_message = context.user_data['conv_message']
+    text = "Шаг 2/3: Отлично\\! Теперь отправьте *ID* чата, канала или пользователя\\.\n\n_Подсказка: ID канала можно узнать, переслав его пост боту @userinfobot\\. ID группы можно получить так же\\._"
+    await conv_message.edit_text(
+        text, 
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="conv:cancel")]]), 
+        parse_mode=ParseMode.MARKDOWN_V2
+    )
+    return AN_ID
+
+@admin_only
+async def add_notification_get_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id_str = update.message.text
+    if not chat_id_str.lstrip('-').isdigit():
+        conv_message = context.user_data['conv_message']
+        await update.message.delete()
+        await conv_message.edit_text(
+            "❌ *Ошибка:* ID должен быть числом\\. Попробуйте снова или нажмите 'Отмена'\\.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="conv:cancel")]]), 
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+        return AN_ID
+
+    context.user_data['chat_id'] = int(chat_id_str)
+    await update.message.delete()
+    conv_message = context.user_data['conv_message']
+    
+    text = (
+        "Шаг 3/3: Последний шаг\\.\n\n"
+        "Если вы хотите отправлять уведомления в *конкретную тему* \\(топик\\) группы, "
+        "введите её **числовой ID**\\.\n\n"
+        "Если тема не нужна \\(или это не группа с темами\\), просто отправьте `0` или `нет`\\."
+    )
+
+    await conv_message.edit_text(
+        text, 
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="conv:cancel")]]), 
+        parse_mode=ParseMode.MARKDOWN_V2
+    )
+    return AN_THREAD_ID
+    
+@admin_only
+async def add_notification_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    thread_id = None
+
+    if update.message.text:
+        text_input = update.message.text.lower()
+        
+        if text_input in ['0', 'нет', 'no']:
+            thread_id = None
+        elif text_input.isdigit():
+            numeric_id = int(text_input)
+            thread_id = numeric_id if numeric_id != 0 else None
+
+    await update.message.delete()
+    conv_message = context.user_data['conv_message']
+    
+    chat_id = context.user_data['chat_id']
+    description = context.user_data['chat_description']
+    
+    chat_type = "user" if chat_id > 0 else "group"
+
+    new_chat = {
+        "id": chat_id,
+        "thread_id": thread_id,
+        "type": chat_type,
+        "description": description
+    }
+    
     config = await load_json_async(config_lock, CONFIG_FILE)
-    if chat_id not in config.get('admin_chat_ids', []):
-        await update.message.reply_text("Этого чата нет в списке."); return
-    config['admin_chat_ids'].remove(chat_id)
+    config.setdefault('notification_chats', []).append(new_chat)
     await save_json_async(config_lock, CONFIG_FILE, config)
-    await update.message.reply_text(f"🗑️ Чат `{chat_id}` удален.", parse_mode=ParseMode.MARKDOWN_V2)
+
+    thread_info = f" в тему `{thread_id}`" if thread_id else ""
+    text = f"✅ Готово\\! Получатель *{escape_markdown(description)}* \\(`{chat_id}`\\){thread_info} успешно добавлен\\."
+    await conv_message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад в меню", callback_data="menu:back_to_main")]]), parse_mode=ParseMode.MARKDOWN_V2)
+
+    context.user_data.clear()
+    return ConversationHandler.END
 
 @admin_only
 async def set_interval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -550,41 +682,6 @@ async def add_server_get_port(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data.clear()
     return ConversationHandler.END
 
-@admin_only
-async def add_chat_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer()
-    context.user_data['conv_message'] = await query.edit_message_text(
-        f"Введите ID чата или пользователя, которого хотите добавить в администраторы\\.\n\nВаш ID: `{update.effective_user.id}`",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="conv:cancel")]]), 
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
-    return AC_ID
-
-@admin_only
-async def add_chat_get_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id_str = update.message.text
-    await update.message.delete()
-    conv_message = context.user_data['conv_message']
-    text = ""
-    
-    if not chat_id_str.lstrip('-').isdigit():
-        text = "❌ *Ошибка:* ID должен быть числом\\. Операция отменена\\."
-    else:
-        chat_id = int(chat_id_str)
-        config = await load_json_async(config_lock, CONFIG_FILE)
-        if 'admin_chat_ids' not in config: config['admin_chat_ids'] = []
-        if chat_id in config['admin_chat_ids']:
-            text = f"Информационно: Чат `{chat_id}` уже был в списке\\."
-        else:
-            config['admin_chat_ids'].append(chat_id)
-            await save_json_async(config_lock, CONFIG_FILE, config)
-            text = f"✅ Чат `{chat_id}` успешно добавлен в список оповещений\\."
-            try: await context.bot.send_message(chat_id, "✅ Этот чат был успешно добавлен для получения оповещений от бота.")
-            except Exception: pass
-            
-    await conv_message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад в меню", callback_data="menu:back_to_main")]]), parse_mode=ParseMode.MARKDOWN_V2)
-    context.user_data.clear()
-    return ConversationHandler.END
 
 @admin_only
 async def set_interval_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -625,6 +722,20 @@ async def set_interval_get_value(update: Update, context: ContextTypes.DEFAULT_T
     return ConversationHandler.END
 
 @admin_only
+async def menu_notifications(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    text = "Выберите действие для управления получателями уведомлений:"
+    keyboard = [
+        [InlineKeyboardButton("➕ Добавить получателя", callback_data="conv_add_notification:start")],
+        [InlineKeyboardButton("➖ Удалить получателя", callback_data="menu:remove_notification_list")],
+        [InlineKeyboardButton("⬅️ Назад в меню", callback_data="menu:back_to_main")]
+    ]
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+@admin_only
 async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         logging.info("Перезапускаем бота...")
@@ -638,32 +749,66 @@ async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.exception("Произошла ошибка при попытке перезапуска бота.")
         await update.message.reply_text(f"Произошла ошибка: `{e}`", parse_mode=ParseMode.MARKDOWN_V2)
 
+
 def main():
+    """Главная функция для настройки и запуска бота."""
     database.migrate_db(); database.init_db()
     load_dotenv()
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r+') as f:
+            try:
+                config_data = json.load(f)
+                if 'admin_chat_ids' in config_data and 'notification_chats' not in config_data:
+                    logger.warning("Обнаружен старый формат config.json. Выполняется миграция...")
+                    old_admin_ids = config_data.get('admin_chat_ids', [])
+                    new_config = {
+                        "check_interval_seconds": config_data.get('check_interval_seconds', 300),
+                        "admin_chat_ids": old_admin_ids,
+                        "notification_chats": [
+                            {"id": chat_id, "type": "user", "description": f"Admin User {chat_id}"} 
+                            for chat_id in old_admin_ids
+                        ]
+                    }
+                    f.seek(0)
+                    json.dump(new_config, f, indent=2, ensure_ascii=False)
+                    f.truncate()
+                    logger.info("Миграция config.json на новую структуру успешно завершена.")
+            except json.JSONDecodeError:
+                logger.error("Ошибка чтения config.json. Файл может быть поврежден.")
 
-    global telegram_tag; telegram_tag = os.getenv("TELEGRAM_TAG", "your_telegram_tag")
-    global website_url; website_url = os.getenv("WEBSITE_URL", "example.com")
-    if not token: logger.critical("Не найден TELEGRAM_BOT_TOKEN в .env! Выход."); return
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    
+    global telegram_tag, website_url
+    telegram_tag = os.getenv("TELEGRAM_TAG", "your_telegram_tag")
+    website_url = os.getenv("WEBSITE_URL", "")
+    
+    if not token:
+        logger.critical("Не найден TELEGRAM_BOT_TOKEN в .env! Выход.")
+        return
 
     if not database.get_servers() and os.path.exists('servers.json'):
-        logger.info("База данных пуста. Импорт из servers.json...")
+        logger.info("База данных серверов пуста. Импорт из servers.json...")
         try:
             with open('servers.json', 'r', encoding='utf-8') as f:
-                servers_data = json.load(f)
-                for s in servers_data:
-                    database.add_server(s['name'], s['host'], s['port'])
-            logger.info("Импорт завершен. servers.json больше не используется.")
-        except Exception as e: logger.error(f"Не удалось импортировать серверы: {e}")
+                servers_from_json = json.load(f)
+                if isinstance(servers_from_json, list):
+                    for s in servers_from_json:
+                        if all(k in s for k in ['name', 'host', 'port']):
+                            database.add_server(s['name'], s['host'], s['port'])
+                    logger.info("Импорт из servers.json завершен.")
+        except Exception as e:
+            logger.error(f"Не удалось импортировать серверы из servers.json: {e}")
 
     if not os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump({"admin_chat_ids": [], "check_interval_seconds": 300}, f, indent=2)
+            json.dump({"admin_chat_ids": [], "notification_chats": [], "check_interval_seconds": 300}, f, indent=2)
 
     try:
-        with open(CONFIG_FILE, 'r') as f: check_interval = json.load(f).get('check_interval_seconds', 300)
-    except (FileNotFoundError, json.JSONDecodeError): check_interval = 300
+        with open(CONFIG_FILE, 'r') as f:
+            check_interval = json.load(f).get('check_interval_seconds', 300)
+    except (FileNotFoundError, json.JSONDecodeError):
+        check_interval = 300
 
     application = Application.builder().token(token).post_init(post_init).build()
     
@@ -684,13 +829,21 @@ def main():
             AS_PORT: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_server_get_port)],
         },
         fallbacks=[CallbackQueryHandler(conv_cancel, pattern='^conv:cancel$'), CommandHandler('cancel', conv_cancel)],
-        conversation_timeout=120
+        conversation_timeout=180
     )
-    conv_add_chat = ConversationHandler(
-        entry_points=[CallbackQueryHandler(add_chat_start, pattern='^conv_add_chat:start$')],
-        states={ AC_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_chat_get_id)] },
+    
+    conv_add_notification = ConversationHandler(
+        entry_points=[CallbackQueryHandler(add_notification_start, pattern='^conv_add_notification:start$')],
+        states={
+            AN_DESCRIPTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_notification_get_description),
+                CallbackQueryHandler(add_notification_skip_description, pattern='^conv_add_notification:skip_description$')
+            ],
+            AN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_notification_get_id)],
+            AN_THREAD_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_notification_finish)],
+        },
         fallbacks=[CallbackQueryHandler(conv_cancel, pattern='^conv:cancel$'), CommandHandler('cancel', conv_cancel)],
-        conversation_timeout=60
+        conversation_timeout=300
     )
     conv_set_interval = ConversationHandler(
         entry_points=[CallbackQueryHandler(set_interval_start, pattern='^conv_set_interval:start$')],
@@ -698,34 +851,45 @@ def main():
         fallbacks=[CallbackQueryHandler(conv_cancel, pattern='^conv:cancel$'), CommandHandler('cancel', conv_cancel)],
         conversation_timeout=60
     )
-    
     application.add_handler(conv_add_server)
-    application.add_handler(conv_add_chat)
+    application.add_handler(conv_add_notification)
     application.add_handler(conv_set_interval)
     
+
     command_handlers = [
-        CommandHandler("start", start), CommandHandler("help", help_command),
-        CommandHandler("status", status_command), CommandHandler("check_now", check_now_command),
-        CommandHandler("add_server", add_server_command), CommandHandler("remove_server", remove_server_command),
-        CommandHandler("publish", publish_server), CommandHandler("hide", hide_server),
-        CommandHandler("set_interval", set_interval_command), CommandHandler("add_chat", add_chat_command),
-        CommandHandler("remove_chat", remove_chat_command),CommandHandler("restart", restart_bot)
+        CommandHandler("start", start), 
+        CommandHandler("help", help_command),
+        CommandHandler("status", status_command), 
+        CommandHandler("check_now", check_now_command),
+        CommandHandler("add_server", add_server_command), 
+        CommandHandler("remove_server", remove_server_command),
+        CommandHandler("publish", publish_server),
+        CommandHandler("hide", hide_server),
+        CommandHandler("set_interval", set_interval_command),
+        CommandHandler("restart", restart_bot)
     ]
     application.add_handlers(command_handlers)
     
+
     application.add_handler(CallbackQueryHandler(start, pattern=r"^menu:back_to_main$"))
     application.add_handler(CallbackQueryHandler(menu_status, pattern=r"^menu:status$"))
     application.add_handler(CallbackQueryHandler(menu_check_now, pattern=r"^menu:check_now$"))
-    
+    application.add_handler(CallbackQueryHandler(menu_notifications, pattern=r"^menu:notifications$"))
+
+
     application.add_handler(CallbackQueryHandler(lambda u,c: generic_list_menu(u,c,'remove_server'), pattern=r"^menu:remove_server_list$"))
     application.add_handler(CallbackQueryHandler(lambda u,c: generic_list_menu(u,c,'publish_server'), pattern=r"^menu:publish_list$"))
     application.add_handler(CallbackQueryHandler(lambda u,c: generic_list_menu(u,c,'hide_server'), pattern=r"^menu:hide_list$"))
-    application.add_handler(CallbackQueryHandler(lambda u,c: generic_list_menu(u,c,'remove_chat'), pattern=r"^menu:remove_chat_list$"))
+    application.add_handler(CallbackQueryHandler(lambda u,c: generic_list_menu(u,c,'remove_notification'), pattern=r"^menu:remove_notification_list$"))
+
 
     application.add_handler(CallbackQueryHandler(generic_action_handler, pattern=r"^action_"))
 
+
     if application.job_queue:
-        application.job_queue.run_repeating(monitoring_job, interval=check_interval, name="monitoring_job", first=5)
+        application.job_queue.run_repeating(
+            monitoring_job, interval=check_interval, name="monitoring_job", first=5
+        )
     
     logger.info(f"Бот запускается. Интервал проверки: {check_interval} сек.")
     logger.info(f"Параметры проверки: Попыток={application.bot_data['check_retries']}, Порог сбоев={application.bot_data['failure_threshold']}.")
