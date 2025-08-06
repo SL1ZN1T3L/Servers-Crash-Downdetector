@@ -549,45 +549,64 @@ async def add_notification_get_id(update: Update, context: ContextTypes.DEFAULT_
     conv_message = context.user_data['conv_message']
     
     text = (
-        "Шаг 3/3: Последний шаг\\.\n\n"
-        "Если вы хотите отправлять уведомления в *конкретную тему* \\(топик\\) группы, "
-        "введите её **числовой ID**\\.\n\n"
-        "Если тема не нужна \\(или это не группа с темами\\), просто отправьте `0` или `нет`\\."
+        "Шаг 3/3: Отлично\\!\n\n"
+        "Если это супергруппа и уведомления нужно слать в *конкретную тему* \\(топик\\), введите её **числовой ID**\\."
     )
+    
+    keyboard = [
+        [InlineKeyboardButton("Без темы / Это обычный чат", callback_data="conv_add_notification:skip_thread_id")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="conv:cancel")]
+    ]
 
     await conv_message.edit_text(
         text, 
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="conv:cancel")]]), 
+        reply_markup=InlineKeyboardMarkup(keyboard), 
         parse_mode=ParseMode.MARKDOWN_V2
     )
     return AN_THREAD_ID
-    
+
 @admin_only
 async def add_notification_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = None
-
-    if update.message.text:
+    query = update.callback_query
+    if query and query.data == 'conv_add_notification:skip_thread_id':
+        await query.answer()
+        thread_id = None
+    elif update.message and update.message.text:
+        await update.message.delete()
         text_input = update.message.text.lower()
-        
-        if text_input in ['0', 'нет', 'no']:
-            thread_id = None
-        elif text_input.isdigit():
-            numeric_id = int(text_input)
-            thread_id = numeric_id if numeric_id != 0 else None
-
-    await update.message.delete()
+        if text_input.isdigit():
+            thread_id = int(text_input) if int(text_input) != 0 else None
+            
     conv_message = context.user_data['conv_message']
     
     chat_id = context.user_data['chat_id']
-    description = context.user_data['chat_description']
+    user_description = context.user_data.get('chat_description')
+
+    detected_description = f"Получатель {chat_id}"
+    detected_type = "unknown"
     
-    chat_type = "user" if chat_id > 0 else "group"
+    try:
+        chat_info = await context.bot.get_chat(chat_id=chat_id)
+        detected_type = chat_info.type
+        if chat_info.title:
+            detected_description = f'{chat_info.title}'
+        elif chat_info.first_name:
+            full_name = chat_info.first_name
+            if chat_info.last_name:
+                full_name += f" {chat_info.last_name}"
+            detected_description = full_name
+            
+    except TelegramError as e:
+        logger.warning(f"Не удалось получить информацию о чате {chat_id}: {e}. Используется описание по умолчанию.")
+
+    final_description = user_description or detected_description
 
     new_chat = {
         "id": chat_id,
         "thread_id": thread_id,
-        "type": chat_type,
-        "description": description
+        "type": detected_type,
+        "description": final_description
     }
     
     config = await load_json_async(config_lock, CONFIG_FILE)
@@ -595,7 +614,7 @@ async def add_notification_finish(update: Update, context: ContextTypes.DEFAULT_
     await save_json_async(config_lock, CONFIG_FILE, config)
 
     thread_info = f" в тему `{thread_id}`" if thread_id else ""
-    text = f"✅ Готово\\! Получатель *{escape_markdown(description)}* \\(`{chat_id}`\\){thread_info} успешно добавлен\\."
+    text = f"✅ Готово\\! Получатель *{escape_markdown(final_description)}* \\(`{chat_id}`\\){thread_info} успешно добавлен\\."
     await conv_message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад в меню", callback_data="menu:back_to_main")]]), parse_mode=ParseMode.MARKDOWN_V2)
 
     context.user_data.clear()
@@ -833,18 +852,21 @@ def main():
     )
     
     conv_add_notification = ConversationHandler(
-        entry_points=[CallbackQueryHandler(add_notification_start, pattern='^conv_add_notification:start$')],
-        states={
-            AN_DESCRIPTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_notification_get_description),
-                CallbackQueryHandler(add_notification_skip_description, pattern='^conv_add_notification:skip_description$')
-            ],
-            AN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_notification_get_id)],
-            AN_THREAD_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_notification_finish)],
-        },
-        fallbacks=[CallbackQueryHandler(conv_cancel, pattern='^conv:cancel$'), CommandHandler('cancel', conv_cancel)],
-        conversation_timeout=300
-    )
+    entry_points=[CallbackQueryHandler(add_notification_start, pattern='^conv_add_notification:start$')],
+    states={
+        AN_DESCRIPTION: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, add_notification_get_description),
+            CallbackQueryHandler(add_notification_skip_description, pattern='^conv_add_notification:skip_description$')
+        ],
+        AN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_notification_get_id)],
+        AN_THREAD_ID: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, add_notification_finish),
+            CallbackQueryHandler(add_notification_finish, pattern='^conv_add_notification:skip_thread_id$')
+        ],
+    },
+    fallbacks=[CallbackQueryHandler(conv_cancel, pattern='^conv:cancel$'), CommandHandler('cancel', conv_cancel)],
+    conversation_timeout=300
+)
     conv_set_interval = ConversationHandler(
         entry_points=[CallbackQueryHandler(set_interval_start, pattern='^conv_set_interval:start$')],
         states={ SI_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_interval_get_value)] },
